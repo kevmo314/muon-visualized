@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Muon, Visualized</title>
+<meta name="description" content="An interactive explanation of the Muon optimizer versus AdamW: orthogonalized momentum, river-valley landscapes, spectral-norm steepest descent, and the tradeoffs.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <div class="kicker">An interactive explainer</div>
+    <h1>Muon, <em>visualized</em></h1>
+    <p class="lede">Muon takes the momentum matrix that SGD would use, and replaces it with the nearest orthogonal matrix, so every direction in the update gets the same size step. Why does that help, and what does it cost? Pick an explanation from the research, then go break things in the 3D lab.</p>
+    <div class="legend"><span class="sgd"><b>SGD-momentum</b></span><span class="adamw"><b>AdamW</b></span><span class="muon"><b>Muon</b></span></div>
+  </header>
+
+  <section id="rules">
+    <div class="rules">
+      <div class="rule" style="--c: var(--adamw)">
+        <h3>AdamW: normalize each <i>entry</i></h3>
+<pre>m ← β₁m + (1−β₁)g
+v ← β₂v + (1−β₂)g²
+W ← W − η·( m̂ / (√v̂ + ε) + λW )</pre>
+        <p>Every coordinate is rescaled on its own. Big for vectors, but it sees a weight matrix as a bag of numbers. Its idea of "a direction" depends on which basis the matrix happens to be written in.</p>
+      </div>
+      <div class="rule" style="--c: var(--muon)">
+        <h3>Muon: normalize each <i>singular direction</i></h3>
+<pre>M ← βM + G                 (momentum)
+O ← NewtonSchulz₅(M) ≈ UVᵀ  (M = USVᵀ)
+W ← W − η·O</pre>
+        <p>The SVD keeps the momentum's input/output directions (U, V) and throws away the singular values S. Five cheap matmul iterations approximate this without ever computing an SVD.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="explanations">
+    <div class="section-head">
+      <h2>Pick an explanation</h2>
+      <p>Five ways researchers have explained why orthogonalized momentum works. Each one comes with a small interactive model of its claim.</p>
+    </div>
+    <div class="tabs" role="tablist" id="tabs"></div>
+    <div class="panel" id="explain-panel">
+      <blockquote id="ex-quote"></blockquote>
+      <div class="cite" id="ex-cite"></div>
+      <div class="explain-body">
+        <div class="viz" id="ex-viz"></div>
+        <div class="side" id="ex-side"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="lab-section">
+    <div class="section-head">
+      <h2>The tradeoff lab</h2>
+      <p>A river-valley loss over a 6×6 weight matrix. One steep direction forms the valley walls, and one flat direction is the river that carries the useful progress. Pick a pro or con on the right to load a scenario, then drag to orbit and scroll to zoom.</p>
+    </div>
+    <div class="lab">
+      <div>
+        <div class="stage">
+          <canvas id="lab3d"></canvas>
+          <div class="overlay" id="lab-overlay"></div>
+          <div class="step" id="lab-step">step 0</div>
+          <div class="axis-note">Surface: loss over the <b style="color:var(--wall)">steepest (wall)</b> and <b style="color:var(--river)">flattest (river)</b> directions; trajectories projected onto it.</div>
+        </div>
+        <div class="card" style="padding:0; margin-top:12px">
+          <div class="toolbar">
+            <button class="btn primary" id="lab-play">Pause</button>
+            <button class="btn" id="lab-reset">Restart</button>
+            <div class="toggles" id="lab-toggles"></div>
+          </div>
+          <div class="hud" id="lab-hud"></div>
+          <div class="lossbox"><canvas id="lab-loss"></canvas></div>
+        </div>
+      </div>
+      <div class="lab-side">
+        <div id="tradeoffs"></div>
+        <div class="card lab-controls" id="lab-controls"></div>
+        <div class="card static-notes">
+          <h3>Tradeoffs you can't see in a 6×6 toy</h3>
+          <ul>
+            <li><span class="tag pro">PRO</span> <b>Memory.</b> Muon keeps one momentum buffer per matrix. AdamW keeps two (m and v).</li>
+            <li><span class="tag con">CON</span> <b>Hidden matrices only.</b> Jordan et al. apply Muon to 2D hidden-layer weights. Embeddings, the output head, and gains/biases still go to AdamW (or SGD), so you tune two optimizers.</li>
+            <li><span class="tag con">CON</span> <b>Extra compute and communication.</b> Newton–Schulz costs a few matmuls per matrix per step. Under sharded training each full matrix must be gathered before orthogonalizing. Moonshot handles this with a distributed variant built on ZeRO-1.</li>
+            <li><span class="tag mix">TUNE</span> <b>Update scale.</b> A raw orthogonal update has RMS ≈ 1/√max(A,B), which depends on the matrix's shape. Moonshot rescales it by 0.2·√max(A,B) so AdamW's learning rate and weight decay transfer directly.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <p><b>Sources quoted on this page</b></p>
+    <ol>
+      <li>J. Kim, B. Shin, J. Yun, B. Baek, M. Song, C. Yun. <a href="https://arxiv.org/abs/2605.22432">AMUSE: Anytime Muon with Stable Gradient Evaluation</a>. arXiv:2605.22432, 2026.</li>
+      <li>K. Jordan, Y. Jin, V. Boza, J. You, F. Cesista, L. Newhouse, J. Bernstein. <a href="https://kellerjordan.github.io/posts/muon/">Muon: An optimizer for hidden layers in neural networks</a>. Blog post, Dec 2024.</li>
+      <li>J. Bernstein. <a href="https://jeremybernste.in/writing/deriving-muon">Deriving Muon</a>. Mar 2025. See also J. Bernstein, L. Newhouse, <a href="https://arxiv.org/abs/2409.20325">Old Optimizer, New Norm: An Anthology</a>, 2024.</li>
+      <li>J. Liu, J. Su, X. Yao, et al. (Moonshot AI). <a href="https://arxiv.org/abs/2502.16982">Muon is Scalable for LLM Training</a>. arXiv:2502.16982, 2025.</li>
+      <li>K. Wen, Z. Li, J. Wang, D. Hall, P. Liang, T. Ma. <a href="https://arxiv.org/abs/2410.05192">Understanding Warmup-Stable-Decay Learning Rates: A River Valley Loss Landscape Perspective</a>. ICLR 2025.</li>
+      <li>M. Song, K. Ahn, C. Yun. <a href="https://openreview.net/forum?id=v6iLQBoIJw">Does SGD really happen in tiny subspaces?</a> ICLR 2025.</li>
+      <li>W. Shen, R. Huang, M. Huang, C. Shen, J. Zhang. <a href="https://arxiv.org/abs/2505.23737">On the Convergence Analysis of Muon</a>. arXiv:2505.23737, 2025.</li>
+    </ol>
+    <p>All simulations are small toys that run in your browser. They are built to make the mechanisms visible, not to reproduce any paper's numbers. "AMUSE-style" in the lab is a simplified sketch of the paper's idea (evaluate gradients at a point drifting from the fast Muon iterate toward an averaged iterate), not the authors' implementation. Source: <a href="https://github.com/kevmo314/muon-visualized">github.com/kevmo314/muon-visualized</a>.</p>
+  </footer>
+</main>
+<script type="module" src="js/explain.js"></script>
+<script type="module" src="js/lab.js"></script>
+</body>
+</html>
