@@ -63,7 +63,7 @@ W ← W − η·O</pre>
   <section id="lab-section">
     <div class="section-head">
       <h2>The tradeoff lab</h2>
-      <p>A river-valley loss over a 6×6 weight matrix. One steep direction forms the valley walls, and one flat direction is the river that carries the useful progress. Pick a pro or con on the right to load a scenario, then drag to orbit and scroll to zoom.</p>
+      <p>A river-valley loss over a 6×6 weight matrix. One steep direction forms the valley walls, and one flat direction is the river that carries the useful progress. The river can meander, switch back, or squeeze through a narrow gorge. Pick a pro or con on the right to load a scenario, or choose a landscape under <b>Knobs</b>. Drag to orbit, scroll to zoom.</p>
     </div>
     <div class="lab">
       <div>
@@ -108,6 +108,7 @@ W ← W − η·O</pre>
       <li>J. Liu, J. Su, X. Yao, et al. (Moonshot AI). <a href="https://arxiv.org/abs/2502.16982">Muon is Scalable for LLM Training</a>. arXiv:2502.16982, 2025.</li>
       <li>K. Wen, Z. Li, J. Wang, D. Hall, P. Liang, T. Ma. <a href="https://arxiv.org/abs/2410.05192">Understanding Warmup-Stable-Decay Learning Rates: A River Valley Loss Landscape Perspective</a>. ICLR 2025.</li>
       <li>M. Song, K. Ahn, C. Yun. <a href="https://openreview.net/forum?id=v6iLQBoIJw">Does SGD really happen in tiny subspaces?</a> ICLR 2025.</li>
+      <li>J. Cohen, S. Kaur, Y. Li, J. Z. Kolter, A. Talwalkar. <a href="https://openreview.net/forum?id=jh-rTtvkGeM">Gradient Descent on Neural Networks Typically Occurs at the Edge of Stability</a>. ICLR 2021.</li>
       <li>W. Shen, R. Huang, M. Huang, C. Shen, J. Zhang. <a href="https://arxiv.org/abs/2505.23737">On the Convergence Analysis of Muon</a>. arXiv:2505.23737, 2025.</li>
     </ol>
     <p>All simulations are small toys that run in your browser. They are built to make the mechanisms visible, not to reproduce any paper's numbers. "AMUSE-style" in the lab is a simplified sketch of the paper's idea (evaluate gradients at a point drifting from the fast Muon iterate toward an averaged iterate), not the authors' implementation. Source: <a href="https://github.com/kevmo314/muon-visualized">github.com/kevmo314/muon-visualized</a>.</p>

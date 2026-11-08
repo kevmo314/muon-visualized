@@ -3,11 +3,11 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { Line2 } from "three/addons/lines/Line2.js";
 import { LineGeometry } from "three/addons/lines/LineGeometry.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
-import { Landscape, makeRun, stepRun, OPT_LABEL, lrAt } from "./sim.js";
+import { Landscape, LANDSCAPES, makeRun, stepRun, OPT_LABEL, lrAt } from "./sim.js";
 import { fit, font, C, withAlpha, onThemeChange } from "./canvas.js";
 
 const ALL = ["sgd", "adamw", "muon", "amuse"];
-const DEFAULT_CFG = { rotation: 1, noise: 0, lrMult: 1, schedule: "wsd", nsSteps: 5, steps: 400, speed: 2 };
+const DEFAULT_CFG = { landscape: "meander", rotation: 1, noise: 0, lrMult: 1, schedule: "wsd", nsSteps: 5, steps: 400, speed: 2 };
 const cfg = { ...DEFAULT_CFG };
 const visible = { sgd: true, adamw: true, muon: true, amuse: false };
 
@@ -17,33 +17,45 @@ const TRADEOFFS = [
     body: "Orthogonalization gives the flat river directions as big a step as the steep wall directions.",
     quote: "orthogonalized momentum accelerates progress along the river directions", src: "Kim et al., AMUSE (2026)",
     watch: "Follow the purple ball. Muon runs down the river toward the target ring. SGD crawls, because its step size is capped by the steep walls, and AdamW is stuck in a rotated basis. Compare the <b>river</b> % in the readout below.",
-    preset: { rotation: 1, noise: 0, lrMult: 1, schedule: "wsd", nsSteps: 5 }, show: ["sgd", "adamw", "muon"],
+    preset: { landscape: "meander", rotation: 1, noise: 0, lrMult: 1, schedule: "wsd", nsSteps: 5 }, show: ["sgd", "adamw", "muon"],
   },
   {
     id: "basis", tag: "pro", title: "Doesn't care how the weights are rotated",
     body: "AdamW normalizes each entry, so its behaviour depends on which basis the matrix happens to be written in. Muon works on singular directions, so rotating the basis changes nothing.",
     watch: "This starts <b>axis-aligned</b> (rotation 0), where AdamW ≈ Muon. Now drag <b>Basis rotation</b> toward 1: AdamW stalls in the valley while Muon's path stays exactly the same.",
-    preset: { rotation: 0, noise: 0, lrMult: 1, schedule: "wsd", nsSteps: 5 }, show: ["adamw", "muon"],
+    preset: { landscape: "meander", rotation: 0, noise: 0, lrMult: 1, schedule: "wsd", nsSteps: 5 }, show: ["adamw", "muon"],
+  },
+  {
+    id: "gorge", tag: "pro", title: "Doesn't blow up when the valley narrows",
+    body: "SGD's step grows with the curvature it sees. The learning rate that was safe in the wide valley exceeds the stability limit once the walls get 4× steeper. Muon's step size is set by the learning rate alone, so a sharper region just means tighter bouncing.",
+    watch: "Watch SGD (grey) enter the gorge: its oscillation across the walls explodes and flings it back <i>up</i> the river. Muon and the AMUSE-style run thread straight through. This is the same sharpness ceiling studied in edge-of-stability work (Cohen et al., 2021).",
+    preset: { landscape: "gorge", rotation: 1, noise: 0, lrMult: 1, schedule: "wsd", nsSteps: 5 }, show: ["sgd", "muon", "amuse"],
   },
   {
     id: "noise", tag: "con", title: "Not selective: it amplifies noise too",
     body: "Near the valley floor, the steep-direction part of the gradient is small and mostly noise. Orthogonalization still turns it into a full-size step.",
     quote: "Because orthogonalization is not selective, it can amplify noisy components as well as useful ones.", src: "Kim et al., AMUSE (2026)",
     watch: "Muon zig-zags across the valley walls; see its <b>wobble</b>. The green <b>AMUSE-style</b> run applies the paper's fix: it evaluates gradients at a point that drifts toward an averaged iterate. Its wobble is much smaller, at a small cost in early river speed.",
-    preset: { rotation: 1, noise: 0.15, lrMult: 1.5, schedule: "constant", nsSteps: 5 }, show: ["adamw", "muon", "amuse"],
+    preset: { landscape: "meander", rotation: 1, noise: 0.15, lrMult: 1.5, schedule: "constant", nsSteps: 5 }, show: ["adamw", "muon", "amuse"],
+  },
+  {
+    id: "switchback", tag: "con", title: "Wobble costs progress on a winding river",
+    body: "When the river bends, the valley's centre moves sideways as you go downstream. Muon's full-size bounces across the walls keep knocking it off the floor, and every bounce on a bend pushes it back up the river.",
+    watch: "On tight switchbacks Muon stalls partway and can even fall behind SGD. The AMUSE-style run takes its gradients at a smoother, averaged point, hugs the floor through each bend, and reaches the end.",
+    preset: { landscape: "switchback", rotation: 1, noise: 0, lrMult: 1, schedule: "wsd", nsSteps: 5 }, show: ["sgd", "muon", "amuse"],
   },
   {
     id: "decay", tag: "con", title: "Bounces until the learning rate decays",
     body: "Muon's step has a fixed size, so it never shrinks on its own as the gradient shrinks. With a constant LR it keeps bouncing between the walls.",
     quote: "the sustained high learning rate phase and fast decaying phase are responsible for progress in the river and the mountain directions respectively", src: "Wen et al. (2025)",
     watch: "Constant LR: Muon reaches the river's end but keeps rattling, and loss plateaus. Switch <b>Schedule</b> to <b>Warmup-stable-decay</b>. In the final 25% the bouncing collapses and loss drops sharply.",
-    preset: { rotation: 1, noise: 0.08, lrMult: 1.3, schedule: "constant", nsSteps: 5 }, show: ["sgd", "muon"],
+    preset: { landscape: "straight", rotation: 1, noise: 0.08, lrMult: 1.3, schedule: "constant", nsSteps: 5 }, show: ["sgd", "muon"],
   },
   {
     id: "ns", tag: "mix", title: "Newton–Schulz steps: compute vs. quality",
     body: "Each NS iteration costs 3 matmuls. With too few, the small singular values never get lifted, and Muon slides back toward SGD-like behaviour.",
     watch: "With <b>1 NS step</b>, Muon starts out nearly as slow as SGD. Drag <b>NS steps</b> to 5 (Muon's default) and the early river speed comes back.",
-    preset: { rotation: 1, noise: 0, lrMult: 1, schedule: "wsd", nsSteps: 1 }, show: ["sgd", "muon"],
+    preset: { landscape: "straight", rotation: 1, noise: 0, lrMult: 1, schedule: "wsd", nsSteps: 1 }, show: ["sgd", "muon"],
   },
 ];
 
@@ -54,7 +66,8 @@ const hOf = (L) => Math.max(0, (Math.log10(L + 0.01) + 2) * 0.6);
 const wx = (x) => Math.max(XR[0], Math.min(XR[1], x)) * SX;
 const wz = (y) => -(Math.max(YR[0], Math.min(YR[1], y)) - YMID) * SZ;
 
-let land = new Landscape({ rotation: cfg.rotation });
+const makeLand = () => new Landscape({ rotation: cfg.rotation, ...LANDSCAPES[cfg.landscape] });
+let land = makeLand();
 let runs = {};
 let playing = true;
 let T = 0;
@@ -143,20 +156,20 @@ function buildSurface() {
   }
   // river line along the valley floor
   const rpts = [];
-  for (let i = 0; i <= 120; i++) { const y = YR[0] + ((YR[1] - YR[0]) * i) / 120; rpts.push(new THREE.Vector3(wx(0), hOf(land.sliceLoss(0, y)) + 0.01, wz(y))); }
+  for (let i = 0; i <= 120; i++) { const y = YR[0] + ((YR[1] - YR[0]) * i) / 120; const cx = land.wallCentre(y); rpts.push(new THREE.Vector3(wx(cx), hOf(land.sliceLoss(cx, y)) + 0.01, wz(y))); }
   surfGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(rpts), new THREE.LineBasicMaterial({ color: new THREE.Color(col.river), transparent: true, opacity: 0.9 })));
   // target ring
   const ring = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.025, 8, 40), new THREE.MeshBasicMaterial({ color: new THREE.Color(col.good || col.river) }));
   ring.rotation.x = Math.PI / 2;
-  ring.position.set(wx(0), hOf(land.sliceLoss(0, 3)) + 0.02, wz(3));
+  ring.position.set(wx(land.wallCentre(3)), hOf(land.sliceLoss(land.wallCentre(3), 3)) + 0.02, wz(3));
   surfGroup.add(ring);
   const labels = [
-    [textSprite("river →", col.river), new THREE.Vector3(wx(0) + 0.9, 0.9, wz(1.5))],
-    [textSprite("minimum", col.ink2, 0.24), new THREE.Vector3(wx(0), 0.45, wz(3.0))],
+    [textSprite("river →", col.river), new THREE.Vector3(wx(land.wallCentre(1.5)) + 0.9, 0.9, wz(1.5))],
+    [textSprite("minimum", col.ink2, 0.24), new THREE.Vector3(wx(land.wallCentre(3)), 0.45, wz(3.0))],
     [textSprite("valley wall", col.wall, 0.28), new THREE.Vector3(wx(-1), 2.6, wz(1.2))],
     [textSprite("start", col.ink2, 0.24), new THREE.Vector3(wx(0.75), hOf(land.sliceLoss(0.75, 0)) + 0.4, wz(0))],
   ];
-  for (const [s, v] of labels) { s.position.copy(v); surfGroup.add(s); }
+  for (const [s, v] of labels) { s.position.copy(v); s.renderOrder = 20; surfGroup.add(s); }
 }
 
 function buildTraj() {
@@ -200,7 +213,7 @@ function syncTraj() {
 }
 
 function reset() {
-  land = new Landscape({ rotation: cfg.rotation });
+  land = makeLand();
   runs = {};
   T = 0;
   for (const k of ALL) runs[k] = makeRun(land, k, cfg);
@@ -255,6 +268,7 @@ function addSelect(key, label, options) {
 const h3 = document.createElement("h3");
 h3.textContent = "Knobs";
 controlsEl.append(h3);
+addSelect("landscape", "Landscape", Object.fromEntries(Object.entries(LANDSCAPES).map(([k, v]) => [k, v.label])));
 addSlider("rotation", "Basis rotation (0 = axis-aligned)", 0, 1, 0.01, (v) => v.toFixed(2));
 addSlider("noise", "Gradient noise (steep-direction heavy)", 0, 0.3, 0.01, (v) => v.toFixed(2));
 addSlider("lrMult", "Learning rate ×", 0.25, 2, 0.05, (v) => v.toFixed(2) + "×");
@@ -316,7 +330,7 @@ function updateHud() {
   for (const k of active) {
     const h = runs[k].hist, p = h[h.length - 1];
     const w = h.slice(-30);
-    const wob = Math.sqrt(w.reduce((a, q) => a + q.x * q.x, 0) / w.length);
+    const wob = Math.sqrt(w.reduce((a, q) => a + q.e * q.e, 0) / w.length);
     const prog = Math.max(0, Math.min(1, p.y / 3));
     hudCells[k].v.textContent = runs[k].diverged ? "diverged" : `loss ${p.L.toExponential(1)}`;
     hudCells[k].d.innerHTML = `river <b>${(prog * 100).toFixed(0)}%</b> · wobble <b>${wob.toFixed(3)}</b>`;

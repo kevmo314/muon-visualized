@@ -7,9 +7,17 @@ export const OPT_LABEL = { sgd: "SGD-momentum", adamw: "AdamW", muon: "Muon", am
 // Loss lives in "landscape coordinates" C = U^T W V, where U, V are the Hessian's
 // singular bases. Each entry C_ij has its own curvature h_ij. C_00 is the steepest
 // valley-wall direction; C_rr (r = n-1) is the flattest "river" direction, and the
-// valley floor meanders: the wall's centre is A·sin(ω·C_rr).
+// valley floor can meander (wall centre A·sin(ω·C_rr)) and narrow into a gorge
+// (wall stiffness multiplied by 1 + g·exp(-(C_rr - y_g)^2 / w^2)).
+export const LANDSCAPES = {
+  meander: { label: "Meandering river", meander: 0.2, omega: 1.0, gorge: 0 },
+  straight: { label: "Straight river", meander: 0, omega: 1, gorge: 0 },
+  switchback: { label: "Tight switchbacks", meander: 0.35, omega: 1.6, gorge: 0 },
+  gorge: { label: "Bend into a narrow gorge", meander: 0.2, omega: 1.0, gorge: 3 },
+};
+
 export class Landscape {
-  constructor({ n = 6, rotation = 1, seed = 7, hmax = 40, hmin = 0.01, kDom = 2, meander = 0 } = {}) {
+  constructor({ n = 6, rotation = 1, seed = 7, hmax = 40, hmin = 0.01, kDom = 2, meander = 0, omega = 1.6, gorge = 0, gorgeAt = 1.8, gorgeWidth = 0.6 } = {}) {
     this.n = n;
     this.r = n - 1;
     this.kDom = kDom;
@@ -22,8 +30,14 @@ export class Landscape {
     this.hThresh = this.h[kDom - 1] * 0.999;
     this.target = Array.from({ length: n }, (_, k) => (k < kDom ? 0 : 3));
     this.A = meander;
-    this.omega = 1.6;
+    this.omega = omega;
+    this.gorge = gorge;
+    this.gorgeAt = gorgeAt;
+    this.gorgeWidth = gorgeWidth;
   }
+  wallScale(y) { return 1 + this.gorge * Math.exp(-((y - this.gorgeAt) ** 2) / this.gorgeWidth ** 2); }
+  wallScaleD(y) { const d = y - this.gorgeAt; return this.gorge * Math.exp(-(d * d) / this.gorgeWidth ** 2) * (-2 * d / this.gorgeWidth ** 2); }
+  wallCentreD(y) { return this.A * this.omega * Math.cos(this.omega * y); }
   toC(W) { return matmul(matmul(T(this.U), W), this.V); }
   fromC(C) { return matmul(matmul(this.U, C), T(this.V)); }
   initialW() {
@@ -38,21 +52,23 @@ export class Landscape {
     const n = this.n, r = this.r, H = this.H;
     const D = zeros(n, n);
     let L = 0;
+    const y = C[r][r], sc = this.wallScale(y);
     for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
-      let e;
-      if (i === j) e = C[i][i] - (i === 0 ? this.wallCentre(C[r][r]) : this.target[i]);
+      let e, h = H[i][j];
+      if (i === j) e = C[i][i] - (i === 0 ? this.wallCentre(y) : this.target[i]);
       else e = C[i][j];
-      L += 0.5 * H[i][j] * e * e;
-      D[i][j] += H[i][j] * e;
+      if (i === 0 && j === 0) h *= sc;
+      L += 0.5 * h * e * e;
+      D[i][j] += h * e;
     }
-    const e0 = C[0][0] - this.wallCentre(C[r][r]);
-    D[r][r] += -H[0][0] * e0 * this.A * this.omega * Math.cos(this.omega * C[r][r]);
+    const e0 = C[0][0] - this.wallCentre(y);
+    D[r][r] += -H[0][0] * sc * e0 * this.wallCentreD(y) + 0.5 * H[0][0] * this.wallScaleD(y) * e0 * e0;
     return { L, D };
   }
   // Loss restricted to the (steep, river) plane with every other coordinate optimal.
   sliceLoss(x, y) {
     const e0 = x - this.wallCentre(y), er = y - this.target[this.r];
-    return 0.5 * this.h[0] * e0 * e0 + 0.5 * this.h[this.r] * er * er;
+    return 0.5 * this.h[0] * this.wallScale(y) * e0 * e0 + 0.5 * this.h[this.r] * er * er;
   }
   // fraction of a matrix's energy that lies in the dominant (high-curvature) subspace
   domFraction(M) {
@@ -93,7 +109,7 @@ export function makeRun(land, opt, cfg) {
     hist: [], diverged: false,
   };
   const C0 = land.toC(st.W);
-  st.hist.push({ x: C0[0][0], y: C0[land.r][land.r], L: land.lossGradC(C0).L, split: null });
+  st.hist.push({ x: C0[0][0], y: C0[land.r][land.r], e: C0[0][0] - land.wallCentre(C0[land.r][land.r]), L: land.lossGradC(C0).L, split: null });
   return st;
 }
 
@@ -158,5 +174,5 @@ export function stepRun(land, st, cfg) {
   const L = land.lossGradC(C2).L;
   const split = frob(upd) > 0 ? land.split(upd) : null;
   if (!isFinite(L) || L > 1e6) st.diverged = true;
-  st.hist.push({ x: C2[0][0], y: C2[land.r][land.r], L, split });
+  st.hist.push({ x: C2[0][0], y: C2[land.r][land.r], e: C2[0][0] - land.wallCentre(C2[land.r][land.r]), L, split });
 }
