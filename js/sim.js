@@ -16,8 +16,32 @@ export const LANDSCAPES = {
   gorge: { label: "Bend into a narrow gorge", meander: 0.2, omega: 1.0, gorge: 3 },
 };
 
+// ---------- user terrain (terraforming) ----------
+// The sculpted loss is L = (L_base + EPS)·exp(T(x, y)) − EPS, where T is a sum of Gaussian
+// dabs: raising/digging is uniform on a log-loss scale and the loss stays > −EPS.
+// The river's path and wall steepness can also be repainted as splines along y.
+export const TERRAIN_EPS = 0.01;
+export const KNOT_Y0 = -0.3, KNOT_Y1 = 3.5, KNOTS = 24;
+const KDY = (KNOT_Y1 - KNOT_Y0) / (KNOTS - 1);
+export const knotY = (j) => KNOT_Y0 + j * KDY;
+export function newTerrain() { return { bumps: [], centre: null, steep: null }; }
+
+// Catmull–Rom spline through uniform knots; returns [value, d/dy]
+function spline(k, y) {
+  const yc = Math.max(KNOT_Y0, Math.min(KNOT_Y1, y));
+  const u = (yc - KNOT_Y0) / KDY;
+  const i = Math.max(0, Math.min(KNOTS - 2, Math.floor(u)));
+  const t = u - i;
+  const p0 = k[Math.max(i - 1, 0)], p1 = k[i], p2 = k[i + 1], p3 = k[Math.min(i + 2, KNOTS - 1)];
+  const a = 2 * p1, b = -p0 + p2, c = 2 * p0 - 5 * p1 + 4 * p2 - p3, d = -p0 + 3 * p1 - 3 * p2 + p3;
+  const v = 0.5 * (a + b * t + c * t * t + d * t * t * t);
+  const dv = y < KNOT_Y0 || y > KNOT_Y1 ? 0 : (0.5 * (b + 2 * c * t + 3 * d * t * t)) / KDY;
+  return [v, dv];
+}
+
 export class Landscape {
-  constructor({ n = 6, rotation = 1, seed = 7, hmax = 40, hmin = 0.01, kDom = 2, meander = 0, omega = 1.6, gorge = 0, gorgeAt = 1.8, gorgeWidth = 0.6 } = {}) {
+  constructor({ n = 6, rotation = 1, seed = 7, hmax = 40, hmin = 0.01, kDom = 2, meander = 0, omega = 1.6, gorge = 0, gorgeAt = 1.8, gorgeWidth = 0.6, terrain = null } = {}) {
+    this.terrain = terrain ?? newTerrain();
     this.n = n;
     this.r = n - 1;
     this.kDom = kDom;
@@ -35,9 +59,32 @@ export class Landscape {
     this.gorgeAt = gorgeAt;
     this.gorgeWidth = gorgeWidth;
   }
-  wallScale(y) { return 1 + this.gorge * Math.exp(-((y - this.gorgeAt) ** 2) / this.gorgeWidth ** 2); }
-  wallScaleD(y) { const d = y - this.gorgeAt; return this.gorge * Math.exp(-(d * d) / this.gorgeWidth ** 2) * (-2 * d / this.gorgeWidth ** 2); }
-  wallCentreD(y) { return this.A * this.omega * Math.cos(this.omega * y); }
+  baseScale(y) { return 1 + this.gorge * Math.exp(-((y - this.gorgeAt) ** 2) / this.gorgeWidth ** 2); }
+  baseScaleD(y) { const d = y - this.gorgeAt; return this.gorge * Math.exp(-(d * d) / this.gorgeWidth ** 2) * (-2 * d / this.gorgeWidth ** 2); }
+  baseCentre(y) { return this.A * Math.sin(this.omega * y); }
+  baseCentreD(y) { return this.A * this.omega * Math.cos(this.omega * y); }
+  wallCentre(y) { const k = this.terrain.centre; return k ? spline(k, y)[0] : this.baseCentre(y); }
+  wallCentreD(y) { const k = this.terrain.centre; return k ? spline(k, y)[1] : this.baseCentreD(y); }
+  // wall stiffness multiplier: preset gorge × exp(painted log-steepness)
+  wallScale(y) { const k = this.terrain.steep; return this.baseScale(y) * (k ? Math.exp(spline(k, y)[0]) : 1); }
+  wallScaleD(y) {
+    const k = this.terrain.steep;
+    if (!k) return this.baseScaleD(y);
+    const [v, dv] = spline(k, y), e = Math.exp(v);
+    return this.baseScaleD(y) * e + this.baseScale(y) * e * dv;
+  }
+  // terrain field T and its gradient
+  field(x, y) {
+    let t = 0, tx = 0, ty = 0;
+    for (const b of this.terrain.bumps) {
+      const dx = (x - b.x) / b.sx, dy = (y - b.y) / b.sy;
+      const q = dx * dx + dy * dy;
+      if (q > 16) continue;
+      const g = b.a * Math.exp(-0.5 * q);
+      t += g; tx -= (g * dx) / b.sx; ty -= (g * dy) / b.sy;
+    }
+    return [t, tx, ty];
+  }
   toC(W) { return matmul(matmul(T(this.U), W), this.V); }
   fromC(C) { return matmul(matmul(this.U, C), T(this.V)); }
   initialW() {
@@ -46,7 +93,6 @@ export class Landscape {
     for (let k = 1; k < this.kDom; k++) C[k][k] = 0.4;
     return this.fromC(C);
   }
-  wallCentre(y) { return this.A * Math.sin(this.omega * y); }
   // loss and gradient in C coordinates
   lossGradC(C) {
     const n = this.n, r = this.r, H = this.H;
@@ -63,12 +109,22 @@ export class Landscape {
     }
     const e0 = C[0][0] - this.wallCentre(y);
     D[r][r] += -H[0][0] * sc * e0 * this.wallCentreD(y) + 0.5 * H[0][0] * this.wallScaleD(y) * e0 * e0;
+    if (this.terrain.bumps.length) {
+      const [t, tx, ty] = this.field(C[0][0], y);
+      const et = Math.exp(t), base = L + TERRAIN_EPS;
+      for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) D[i][j] *= et;
+      D[0][0] += base * et * tx;
+      D[r][r] += base * et * ty;
+      L = base * et - TERRAIN_EPS;
+    }
     return { L, D };
   }
   // Loss restricted to the (steep, river) plane with every other coordinate optimal.
   sliceLoss(x, y) {
     const e0 = x - this.wallCentre(y), er = y - this.target[this.r];
-    return 0.5 * this.h[0] * this.wallScale(y) * e0 * e0 + 0.5 * this.h[this.r] * er * er;
+    const L = 0.5 * this.h[0] * this.wallScale(y) * e0 * e0 + 0.5 * this.h[this.r] * er * er;
+    if (!this.terrain.bumps.length) return L;
+    return (L + TERRAIN_EPS) * Math.exp(this.field(x, y)[0]) - TERRAIN_EPS;
   }
   // fraction of a matrix's energy that lies in the dominant (high-curvature) subspace
   domFraction(M) {

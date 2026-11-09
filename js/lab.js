@@ -3,7 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { Line2 } from "three/addons/lines/Line2.js";
 import { LineGeometry } from "three/addons/lines/LineGeometry.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
-import { Landscape, LANDSCAPES, makeRun, stepRun, OPT_LABEL, lrAt } from "./sim.js";
+import { Landscape, LANDSCAPES, makeRun, stepRun, OPT_LABEL, lrAt, newTerrain, KNOTS, knotY } from "./sim.js";
 import { fit, font, C, withAlpha, onThemeChange } from "./canvas.js";
 
 const ALL = ["sgd", "adamw", "muon", "amuse"];
@@ -52,6 +52,12 @@ const TRADEOFFS = [
     preset: { landscape: "straight", rotation: 1, noise: 0.08, lrMult: 1.3, schedule: "constant", nsSteps: 5 }, show: ["sgd", "muon"],
   },
   {
+    id: "sculpt", tag: "try", title: "Build your own landscape",
+    body: "Pick a terraforming tool under the 3D view and drag on the surface. Raise hills, dig pits, draw a new course for the river, or pinch the valley narrower. The optimizers feel the change immediately, because the terrain is part of the loss.",
+    watch: "Try <b>Narrow</b> on a short stretch of river: SGD gets flung back upstream, Muon squeezes partway through, and the AMUSE-style run makes it furthest. Try <b>Draw river</b> in a zig-zag: everyone slows down, Muon still beats SGD and AdamW, and its wall-wobble costs it on every bend. A tall <b>Raise</b> hill across the river is a real local barrier. <i>None</i> of these optimizers climbs it, because orthogonalization changes the shape of a step, not whether it goes uphill. Right-drag orbits while a tool is active.",
+    preset: { landscape: "straight", rotation: 1, noise: 0, lrMult: 1, schedule: "wsd", nsSteps: 5 }, show: ["sgd", "adamw", "muon"], tool: "raise",
+  },
+  {
     id: "ns", tag: "mix", title: "Newton–Schulz steps: compute vs. quality",
     body: "Each NS iteration costs 3 matmuls. With too few, the small singular values never get lifted, and Muon slides back toward SGD-like behaviour.",
     watch: "With <b>1 NS step</b>, Muon starts out nearly as slow as SGD. Drag <b>NS steps</b> to 5 (Muon's default) and the early river speed comes back.",
@@ -62,11 +68,13 @@ const TRADEOFFS = [
 // ---------- landscape -> world mapping ----------
 const XR = [-1.1, 1.1], YR = [-0.3, 3.5];
 const SX = 2.6, SZ = 1.55, YMID = (YR[0] + YR[1]) / 2;
-const hOf = (L) => Math.max(0, (Math.log10(L + 0.01) + 2) * 0.6);
+const hOf = (L) => (Math.log10(Math.max(L + 0.01, 1e-4)) + 2) * 0.6;
 const wx = (x) => Math.max(XR[0], Math.min(XR[1], x)) * SX;
 const wz = (y) => -(Math.max(YR[0], Math.min(YR[1], y)) - YMID) * SZ;
 
-const makeLand = () => new Landscape({ rotation: cfg.rotation, ...LANDSCAPES[cfg.landscape] });
+let terrain = newTerrain();
+const sculpted = () => terrain.bumps.length > 0 || !!terrain.centre || !!terrain.steep;
+const makeLand = () => new Landscape({ rotation: cfg.rotation, ...LANDSCAPES[cfg.landscape], terrain });
 let land = makeLand();
 let runs = {};
 let playing = true;
@@ -94,6 +102,7 @@ scene.add(surfGroup);
 const trajGroup = new THREE.Group();
 scene.add(trajGroup);
 const traj = {};
+let surfMesh = null;
 
 function textSprite(text, color, size = 0.32) {
   const cv = document.createElement("canvas");
@@ -113,10 +122,18 @@ function textSprite(text, color, size = 0.32) {
   return sp;
 }
 
-function buildSurface() {
-  surfGroup.clear();
+function disposeGroup(g) {
+  g.traverse((o) => {
+    o.geometry?.dispose();
+    if (o.material) { o.material.map?.dispose(); o.material.dispose(); }
+  });
+  g.clear();
+}
+
+function buildSurface(coarse = false) {
+  disposeGroup(surfGroup);
   const col = C();
-  const nx = 90, ny = 140;
+  const nx = coarse ? 56 : 90, ny = coarse ? 86 : 140;
   const geo = new THREE.BufferGeometry();
   const pos = new Float32Array((nx + 1) * (ny + 1) * 3);
   const colors = new Float32Array((nx + 1) * (ny + 1) * 3);
@@ -141,15 +158,16 @@ function buildSurface() {
   geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   geo.computeVertexNormals();
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0, side: THREE.DoubleSide, transparent: true, opacity: 0.92 });
-  surfGroup.add(new THREE.Mesh(geo, mat));
+  surfMesh = new THREE.Mesh(geo, mat);
+  surfGroup.add(surfMesh);
   // grid lines (cross-sections)
   const lineMat = new THREE.LineBasicMaterial({ color: new THREE.Color(col.ink3), transparent: true, opacity: 0.28 });
-  for (let y = 0; y <= 3.4; y += 0.34) {
+  if (!coarse) for (let y = 0; y <= 3.4; y += 0.34) {
     const pts = [];
     for (let i = 0; i <= 80; i++) { const x = XR[0] + ((XR[1] - XR[0]) * i) / 80; pts.push(new THREE.Vector3(wx(x), hOf(land.sliceLoss(x, y)) + 0.004, wz(y))); }
     surfGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMat));
   }
-  for (let x = -1; x <= 1.001; x += 0.25) {
+  if (!coarse) for (let x = -1; x <= 1.001; x += 0.25) {
     const pts = [];
     for (let i = 0; i <= 120; i++) { const y = YR[0] + ((YR[1] - YR[0]) * i) / 120; pts.push(new THREE.Vector3(wx(x), hOf(land.sliceLoss(x, y)) + 0.004, wz(y))); }
     surfGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMat));
@@ -212,6 +230,11 @@ function syncTraj() {
   }
 }
 
+function reproject() {
+  for (const k of ALL) if (traj[k]) { traj[k].n = 0; traj[k].pts = []; }
+  syncTraj();
+}
+
 function reset() {
   land = makeLand();
   runs = {};
@@ -261,7 +284,7 @@ function addSelect(key, label, options) {
   wrap.innerHTML = `<label><span>${label}</span></label><select>${Object.entries(options).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select>`;
   const s = wrap.querySelector("select");
   s.value = cfg[key];
-  s.addEventListener("change", () => { cfg[key] = s.value; reset(); });
+  s.addEventListener("change", () => { cfg[key] = s.value; if (key === "landscape") terrain = newTerrain(); reset(); });
   controlsEl.append(wrap);
   ctlRefs[key] = (v) => { s.value = v; };
 }
@@ -282,7 +305,7 @@ const cards = {};
 for (const t of TRADEOFFS) {
   const c = document.createElement("div");
   c.className = "card tradeoff";
-  c.innerHTML = `<span class="tag ${t.tag}">${t.tag === "mix" ? "TRADEOFF" : t.tag.toUpperCase()}</span><h3>${t.title}</h3><p>${t.body}</p>` +
+  c.innerHTML = `<span class="tag ${t.tag === "try" ? "mix" : t.tag}">${t.tag === "mix" ? "TRADEOFF" : t.tag.toUpperCase()}</span><h3>${t.title}</h3><p>${t.body}</p>` +
     (t.quote ? `<p><q>${t.quote}</q> <span class="src">· ${t.src}</span></p>` : "") +
     `<div class="watch"><b>What to watch:</b> ${t.watch}</div>`;
   c.addEventListener("click", () => applyPreset(t.id));
@@ -294,6 +317,8 @@ function applyPreset(id) {
   const t = TRADEOFFS.find((x) => x.id === id);
   if (!t) return;
   Object.assign(cfg, t.preset);
+  terrain = newTerrain();
+  setTool(t.tool ?? "orbit");
   for (const [k, v] of Object.entries(t.preset)) ctlRefs[k]?.(v);
   for (const k of ALL) visible[k] = t.show.includes(k);
   for (const cb of toggles.querySelectorAll("input")) cb.checked = visible[cb.dataset.opt];
@@ -338,7 +363,8 @@ function updateHud() {
   const t = T;
   document.getElementById("lab-step").textContent = `step ${t} / ${cfg.steps} · lr ×${(cfg.lrMult * lrAt(cfg, t)).toFixed(2)}`;
   const active2 = Object.entries(cards).find(([, c]) => c.classList.contains("active"));
-  document.getElementById("lab-overlay").innerHTML = active2 ? `<b>${TRADEOFFS.find((x) => x.id === active2[0]).title}</b>` : "";
+  const title = active2 ? TRADEOFFS.find((x) => x.id === active2[0]).title : "";
+  document.getElementById("lab-overlay").innerHTML = (title ? `<b>${title}</b>` : "") + (sculpted() ? `<br><span style="color:var(--accent)">✎ sculpted terrain</span>` : "");
   if (t >= cfg.steps) playBtn.textContent = "Replay";
 }
 
@@ -372,6 +398,157 @@ function drawLoss() {
   }
 }
 
+
+// ---------- terraforming ----------
+const TOOLS = {
+  orbit: { label: "Orbit", hint: "Drag to orbit, scroll to zoom." },
+  raise: { label: "Raise", hint: "Drag to pile up hills. They multiply the loss, so they work on walls and floor alike." },
+  dig: { label: "Dig", hint: "Drag to dig pits and channels. A pit can trap an optimizer that doesn't have enough momentum." },
+  river: { label: "Draw river", hint: "Drag along the valley to drag the river's course toward your stroke." },
+  narrow: { label: "Narrow", hint: "Drag along the river to make the valley walls steeper there." },
+  widen: { label: "Widen", hint: "Drag along the river to make the valley walls gentler there." },
+};
+const brush = { size: 0.55, strength: 1 };
+let tool = "orbit";
+const toolBtns = {};
+const sculptEl = document.getElementById("lab-sculpt");
+const hintEl = document.createElement("div");
+{
+  const row = document.createElement("div");
+  row.className = "seg";
+  for (const [k, v] of Object.entries(TOOLS)) {
+    const b = document.createElement("button");
+    b.className = "btn small";
+    b.textContent = v.label;
+    b.addEventListener("click", () => setTool(k));
+    row.append(b);
+    toolBtns[k] = b;
+  }
+  const sliders = document.createElement("div");
+  sliders.className = "sculpt-sliders";
+  const mk = (key, label, min, max, step) => {
+    const w = document.createElement("div");
+    w.className = "ctrl";
+    w.innerHTML = `<label><span>${label}</span><output>${brush[key].toFixed(2)}</output></label><input type="range" min="${min}" max="${max}" step="${step}" value="${brush[key]}">`;
+    const i = w.querySelector("input"), o = w.querySelector("output");
+    i.addEventListener("input", () => { brush[key] = +i.value; o.textContent = (+i.value).toFixed(2); updateCursor(); });
+    sliders.append(w);
+  };
+  mk("size", "Brush size", 0.2, 1.2, 0.05);
+  mk("strength", "Strength", 0.2, 3, 0.1);
+  const clear = document.createElement("button");
+  clear.className = "btn small";
+  clear.textContent = "Clear sculpting";
+  clear.addEventListener("click", () => { terrain = newTerrain(); reset(); });
+  hintEl.className = "sculpt-hint";
+  const head = document.createElement("div");
+  head.className = "sculpt-head";
+  head.innerHTML = "<h3>Terraform</h3>";
+  head.append(clear);
+  sculptEl.append(head, row, sliders, hintEl);
+}
+
+function setTool(k) {
+  tool = k;
+  for (const [n, b] of Object.entries(toolBtns)) b.classList.toggle("primary", n === k);
+  const sculpting = k !== "orbit";
+  controls.mouseButtons = { LEFT: sculpting ? -1 : THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: sculpting ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN };
+  controls.touches = { ONE: sculpting ? -1 : THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_ROTATE };
+  canvas.style.cursor = sculpting ? "crosshair" : "";
+  hintEl.innerHTML = TOOLS[k].hint + (sculpting ? " <b>Right-drag</b> to orbit." : "");
+  cursor.visible = false;
+}
+
+// brush cursor: a ring draped over the surface
+const cursor = new THREE.LineLoop(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true }));
+cursor.renderOrder = 30;
+cursor.visible = false;
+scene.add(cursor);
+let hover = null;
+function updateCursor() {
+  if (!hover || tool === "orbit") { cursor.visible = false; return; }
+  const pts = [];
+  for (let i = 0; i < 48; i++) {
+    const a = (i / 48) * Math.PI * 2;
+    const X = hover.X + Math.cos(a) * brush.size, Z = hover.Z + Math.sin(a) * brush.size;
+    const x = Math.max(XR[0], Math.min(XR[1], X / SX)), y = Math.max(YR[0], Math.min(YR[1], YMID - Z / SZ));
+    pts.push(new THREE.Vector3(wx(x), hOf(land.sliceLoss(x, y)) + 0.03, wz(y)));
+  }
+  cursor.geometry.dispose();
+  cursor.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+  cursor.material.color.set(tool === "dig" || tool === "widen" ? C().river : tool === "river" ? C().accent : C().wall);
+  cursor.visible = true;
+}
+
+const ray = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+function pick(ev) {
+  if (!surfMesh) return null;
+  const r = canvas.getBoundingClientRect();
+  ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const hit = ray.intersectObject(surfMesh, false)[0];
+  if (!hit) return null;
+  return { X: hit.point.x, Z: hit.point.z, x: hit.point.x / SX, y: YMID - hit.point.z / SZ };
+}
+
+function initKnots(kind) {
+  if (kind === "centre" && !terrain.centre) terrain.centre = Array.from({ length: KNOTS }, (_, j) => land.baseCentre(knotY(j)));
+  if (kind === "steep" && !terrain.steep) terrain.steep = new Array(KNOTS).fill(0);
+}
+
+function applyTool(h) {
+  const sx = brush.size / SX / 1.6, sy = brush.size / SZ / 1.6;
+  const kw = (j) => Math.exp(-0.5 * ((knotY(j) - h.y) / (brush.size / SZ)) ** 2);
+  if (tool === "raise" || tool === "dig") {
+    const a = (tool === "raise" ? 1 : -1) * 0.09 * brush.strength;
+    const near = terrain.bumps.find((b) => Math.sign(b.a) === Math.sign(a) && Math.abs(b.x - h.x) < 0.4 * sx && Math.abs(b.y - h.y) < 0.4 * sy && Math.abs(b.sx - sx) < 1e-9);
+    if (near) near.a = Math.max(-4, Math.min(4, near.a + a));
+    else {
+      terrain.bumps.push({ x: h.x, y: h.y, a, sx, sy });
+      if (terrain.bumps.length > 260) terrain.bumps.shift();
+    }
+  } else if (tool === "river") {
+    initKnots("centre");
+    const x = Math.max(-0.9, Math.min(0.9, h.x));
+    for (let j = 0; j < KNOTS; j++) terrain.centre[j] += Math.min(1, kw(j) * 0.25 * brush.strength) * (x - terrain.centre[j]);
+  } else if (tool === "narrow" || tool === "widen") {
+    initKnots("steep");
+    const d = (tool === "narrow" ? 1 : -1) * 0.06 * brush.strength;
+    for (let j = 0; j < KNOTS; j++) terrain.steep[j] = Math.max(-1.6, Math.min(1.8, terrain.steep[j] + d * kw(j)));
+  }
+}
+
+let stroking = false, surfDirty = false;
+canvas.addEventListener("pointerdown", (ev) => {
+  if (tool === "orbit" || ev.button !== 0) return;
+  const h = pick(ev);
+  if (!h) return;
+  stroking = true;
+  canvas.setPointerCapture(ev.pointerId);
+  applyTool(h);
+  surfDirty = true;
+});
+canvas.addEventListener("pointermove", (ev) => {
+  if (tool === "orbit") return;
+  const h = pick(ev);
+  hover = h;
+  if (stroking && h) { applyTool(h); surfDirty = true; }
+  else updateCursor();
+});
+canvas.addEventListener("pointerleave", () => { hover = null; cursor.visible = false; });
+const endStroke = () => {
+  if (!stroking) return;
+  stroking = false;
+  buildSurface(false);
+  reproject();
+  updateCursor();
+  updateHud();
+  if (T >= cfg.steps) { reset(); playing = true; playBtn.textContent = "Pause"; }
+};
+canvas.addEventListener("pointerup", endStroke);
+canvas.addEventListener("pointercancel", endStroke);
+
 function resize() {
   const w = canvas.clientWidth, h = canvas.clientHeight;
   renderer.setSize(w, h, false);
@@ -386,6 +563,12 @@ let frame = 0;
 function animate() {
   requestAnimationFrame(animate);
   controls.update();
+  if (surfDirty) {
+    surfDirty = false;
+    buildSurface(true);
+    reproject();
+    updateCursor();
+  }
   if (playing && T < cfg.steps) {
     stepAll(cfg.speed);
     syncTraj();

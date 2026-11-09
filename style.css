@@ -132,6 +132,14 @@ select { width: 100%; font: inherit; font-size: 14px; padding: 6px 8px; border-r
 .lossbox { padding: 0 14px 14px; }
 .lossbox canvas { width: 100%; height: 150px; display: block; }
 
+.sculpt { margin-top: 12px; }
+.sculpt-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.sculpt-head h3 { margin: 0; }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.sculpt-sliders { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+.sculpt-sliders .ctrl { margin-bottom: 6px; }
+.sculpt-hint { font-size: 13px; color: var(--ink-2); }
+@media (max-width: 560px) { .sculpt-sliders { grid-template-columns: 1fr; } }
 .lab-side { display: flex; flex-direction: column; gap: 12px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); }
 .tradeoff { cursor: pointer; transition: border-color 0.15s; }
